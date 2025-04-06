@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wing Profile Designer</title>
+    <!--
+    ======================================================================
+     Wing Profile Designer
+    ======================================================================
+    This web application lets you visualize and customize NACA 4-digit airfoil
+    shapes in real time. Adjust parameters like camber, thickness, chord length,
+    and resolution to see how the wing profile changes.
+
+    Features:
+    - Real-time rendering using HTML5 Canvas
+    - Adjustable parameters via sliders
+    - Axes and grid for reference
+    - Export option (future enhancement)
+
+    NACA 4-digit formula:
+      yt = (t/0.2) * c * [ 0.2969*sqrt(x/c) - 0.1260*(x/c) - 0.3516*(x/c)^2 + 0.2843*(x/c)^3 - 0.1015*(x/c)^4 ]
+      yc = { (m/p^2) * (2*p*(x/c) - (x/c)^2),              for 0 <= x <= p*c
+             (m/(1-p)^2) * ((1 - 2*p) + 2*p*(x/c) - (x/c)^2), for p*c <= x <= c }
+
+    Controls:
+      - Camber (m): max camber as fraction of chord (0 to 0.1)
+      - Thickness (t): max thickness as fraction of chord (0 to 0.2)
+      - Chord length (c): length of wing chord in arbitrary units
+      - Resolution: number of points along chord (20 to 500)
+
+    ======================================================================
+    -->
+    <style>
+        /* ================================================================ */
+        /* Basic Reset and Layout */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            height: 100%;
+            font-family: Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        h1 {
+            margin-bottom: 10px;
+            font-size: 2rem;
+            color: #2c3e50;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-bottom: 20px;
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 800px;
+        }
+        .control {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            flex: 1 1 200px;
+        }
+        .control label {
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+        }
+        .control input[type=range] {
+            width: 100%;
+        }
+        .control span.value {
+            margin-top: 5px;
+            font-weight: bold;
+        }
+        canvas {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: #fff;
+            width: 100%;
+            max-width: 800px;
+            height: 500px;
+        }
+        /* ================================================================ */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Wing Profile Designer</h1>
+        <div class="controls">
+            <div class="control">
+                <label for="camberRange">Camber (m): <span class="value" id="camberValue">0.02</span></label>
+                <input type="range" id="camberRange" min="0" max="0.1" step="0.001" value="0.02">
+            </div>
+            <div class="control">
+                <label for="thicknessRange">Thickness (t): <span class="value" id="thicknessValue">0.12</span></label>
+                <input type="range" id="thicknessRange" min="0" max="0.2" step="0.001" value="0.12">
+            </div>
+            <div class="control">
+                <label for="chordRange">Chord Length (c): <span class="value" id="chordValue">1.0</span></label>
+                <input type="range" id="chordRange" min="0.5" max="2.0" step="0.1" value="1.0">
+            </div>
+            <div class="control">
+                <label for="resolutionRange">Resolution: <span class="value" id="resolutionValue">100</span></label>
+                <input type="range" id="resolutionRange" min="20" max="500" step="10" value="100">
+            </div>
+        </div>
+        <canvas id="airfoilCanvas"></canvas>
+    </div>
+
+    <script>
+        /**
+         * ======================================================================
+         * JavaScript for Interactive Wing Profile Designer
+         * ======================================================================
+         * This script handles:
+         *  - Reading slider values
+         *  - Computing airfoil coordinates
+         *  - Drawing axes and airfoil shape on canvas
+         *  - Updating in real time on parameter change
+         *
+         * Author: Osayi
+         * Date: 2025-04-06
+         * License: MIT
+         * ======================================================================
+         */
+
+        // ----- Global Variables and DOM References -----
+        const canvas = document.getElementById('airfoilCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const camberRange = document.getElementById('camberRange');
+        const thicknessRange = document.getElementById('thicknessRange');
+        const chordRange = document.getElementById('chordRange');
+        const resolutionRange = document.getElementById('resolutionRange');
+
+        const camberValue = document.getElementById('camberValue');
+        const thicknessValue = document.getElementById('thicknessValue');
+        const chordValue = document.getElementById('chordValue');
+        const resolutionValue = document.getElementById('resolutionValue');
+
+        // Default NACA parameters
+        let m = parseFloat(camberRange.value);      // max camber
+        let t = parseFloat(thicknessRange.value);   // max thickness
+        let c = parseFloat(chordRange.value);       // chord length
+        let n = parseInt(resolutionRange.value);    // resolution (points)
+        const p = 0.4;  // fixed position of max camber (40% chord)
+
+        // Canvas dimensions
+        let canvasWidth, canvasHeight;
+
+        // Resize canvas to container
+        function resizeCanvas() {
+            canvasWidth = canvas.clientWidth;
+            canvasHeight = canvas.clientHeight;
+            canvas.width = canvasWidth * window.devicePixelRatio;
+            canvas.height = canvasHeight * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        // Initial resize
+        resizeCanvas();
+
+        // ----- Event Listeners -----
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            drawAirfoil();
+        });
+
+        camberRange.addEventListener('input', () => {
+            m = parseFloat(camberRange.value);
+            camberValue.textContent = m.toFixed(3);
+            drawAirfoil();
+        });
+
+        thicknessRange.addEventListener('input', () => {
+            t = parseFloat(thicknessRange.value);
+            thicknessValue.textContent = t.toFixed(3);
+            drawAirfoil();
+        });
+
+        chordRange.addEventListener('input', () => {
+            c = parseFloat(chordRange.value);
+            chordValue.textContent = c.toFixed(1);
+            drawAirfoil();
+        });
+
+        resolutionRange.addEventListener('input', () => {
+            n = parseInt(resolutionRange.value);
+            resolutionValue.textContent = n;
+            drawAirfoil();
+        });
+
+        // ----- Airfoil Calculation Functions -----
+        /**
+         * Computes thickness distribution yt at a given x
+         * using NACA 4-digit formula.
+         * @param {number} x - x-coordinate along chord (0 to c)
+         * @returns {number} yt - half-thickness at x
+         */
+        function thicknessDist(x) {
+            const xc = x / c;
+            // NACA thickness formula coefficients
+            const term1 = 0.2969 * Math.sqrt(xc);
+            const term2 = -0.1260 * xc;
+            const term3 = -0.3516 * Math.pow(xc, 2);
+            const term4 = 0.2843 * Math.pow(xc, 3);
+            const term5 = -0.1015 * Math.pow(xc, 4);
+            const yt = (t / 0.2) * c * (term1 + term2 + term3 + term4 + term5);
+            return yt;
+        }
+
+        /**
+         * Computes camber line yc at a given x
+         * using piecewise NACA formula.
+         * @param {number} x - x-coordinate along chord
+         * @returns {number} yc - camber line height
+         */
+        function camberLine(x) {
+            const xc = x / c;
+            let yc;
+            if (xc <= p) {
+                yc = (m / Math.pow(p, 2)) * (2 * p * xc - Math.pow(xc, 2)) * c;
+            } else {
+                yc = (m / Math.pow(1 - p, 2)) * ((1 - 2 * p) + 2 * p * xc - Math.pow(xc, 2)) * c;
+            }
+            return yc;
+        }
+
+        /**
+         * Computes slope dyc/dx of camber line at x
+         * for calculating surface normals.
+         * @param {number} x - x-coordinate along chord
+         * @returns {number} dyc_dx - slope of camber line
+         */
+        function camberSlope(x) {
+            const xc = x / c;
+            let dyc_dx;
+            if (xc <= p) {
+                dyc_dx = (2 * m / Math.pow(p, 2)) * (p - xc);
+            } else {
+                dyc_dx = (2 * m / Math.pow(1 - p, 2)) * (p - xc);
+            }
+            return dyc_dx;
+        }
+
+        /**
+         * Generates upper and lower surface coordinates
+         * for the airfoil profile.
+         * @returns {Array} points - list of {x, y} points
+         */
+        function generateAirfoil() {
+            const points = [];
+            // Compute coordinates from leading to trailing edge
+            for (let i = 0; i <= n; i++) {
+                const x = (i / n) * c;
+                const yt = thicknessDist(x);
+                const yc = camberLine(x);
+                const theta = Math.atan(camberSlope(x));
+                // Upper surface
+                const xu = x - yt * Math.sin(theta);
+                const yu = yc + yt * Math.cos(theta);
+                // Lower surface
+                const xl = x + yt * Math.sin(theta);
+                const yl = yc - yt * Math.cos(theta);
+                points.push({ x: xu, y: yu, upper: true });
+                points.unshift({ x: xl, y: yl, upper: false });
+            }
+            return points;
+        }
+
+        // ----- Drawing Functions -----
+        /**
+         * Clears canvas and draws axes and grid.
+         */
+        function drawAxes() {
+            const w = canvasWidth;
+            const h = canvasHeight;
+            const margin = 50;
+            const axisColor = '#888';
+            const gridColor = '#ddd';
+            const stepX = w / 10;
+            const stepY = h / 10;
+
+            ctx.save();
+            ctx.clearRect(0, 0, w, h);
+
+            // Draw grid lines
+            ctx.strokeStyle = gridColor;
+            ctx.lineWidth = 1;
+            for (let i = margin; i <= w - margin; i += stepX) {
+                ctx.beginPath();
+                ctx.moveTo(i, margin);
+                ctx.lineTo(i, h - margin);
+                ctx.stroke();
+            }
+            for (let j = margin; j <= h - margin; j += stepY) {
+                ctx.beginPath();
+                ctx.moveTo(margin, j);
+                ctx.lineTo(w - margin, j);
+                ctx.stroke();
+            }
+
+            // Draw axes
+            ctx.strokeStyle = axisColor;
+            ctx.lineWidth = 2;
+            // X-axis
+            ctx.beginPath();
+            ctx.moveTo(margin, h/2);
+            ctx.lineTo(w - margin, h/2);
+            ctx.stroke();
+            // Y-axis
+            ctx.beginPath();
+            ctx.moveTo(w/2, margin);
+            ctx.lineTo(w/2, h - margin);
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
+        /**
+         * Draws the airfoil profile based on generated points.
+         */
+        function drawAirfoil() {
+            drawAxes();
+
+            const pts = generateAirfoil();
+            const w = canvasWidth;
+            const h = canvasHeight;
+            const margin = 50;
+
+            // Scale and translate to fit
+            const scaleX = (w - 2 * margin) / c;
+            const scaleY = (h - 2 * margin) / (2 * t * c + 0.2 * c);
+
+            ctx.save();
+            ctx.translate(margin, h/2);
+            ctx.strokeStyle = '#e74c3c';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < pts.length; i++) {
+                const px = pts[i].x * scaleX;
+                const py = -pts[i].y * scaleY;
+                if (i === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // ----- Initial Draw -----
+        drawAirfoil();
+
+        // ======================================================================
+        // End of Script
+        // ======================================================================
+    </script>
+</body>
+</html>
